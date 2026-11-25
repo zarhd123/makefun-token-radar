@@ -11,7 +11,8 @@
   var app = document.getElementById('board');
   var state = {
     q: '', category: 'all', chain: 'all', tab: 'pre-token',
-    sort: 'implied', dir: -1, selected: null,
+    sort: 'implied', dir: -1, selected: null, limit: 'all',
+    compareA: null, compareB: null,
     sandbox: { growth_weight: MODEL.growth_weight, maturity_range: MODEL.maturity_range, breadth_per_chain: MODEL.breadth_per_chain }
   };
 
@@ -166,6 +167,7 @@
     return list.slice().sort(function (a, b) {
       var av, bv;
       if (key === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
+      else if (key === 'category') { av = (a.category || 'Other').toLowerCase(); bv = (b.category || 'Other').toLowerCase(); }
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
@@ -269,6 +271,7 @@
 
   function boardTable() {
     var list = sortedRows(rows());
+    if (state.limit === '50') list = list.slice(0, 50);
     if (list.length === 0) {
       return el('div', { class: 'panel' }, el('div', { class: 'empty' },
         el('h2', { text: 'No protocol matches that filter' }),
@@ -295,8 +298,8 @@
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
-        el('td', { class: 'num', text: r.multiple.toFixed(2) + 'x' }),
-        el('td', null, el('div', { class: 'implied' },
+        el('td', { class: 'num', text: r.multiple.toFixed(2) + 'x', title: r.multiple_source + ' · ' + r.multiple_peers + ' live peers' }),
+        el('td', null, el('div', { class: 'implied', title: 'TVL ' + fmtUsd(r.tvl_usd) + ' × ' + r.multiple.toFixed(2) + 'x × growth ' + r.growth_multiplier + ' × maturity ' + r.maturity_multiplier + ' × breadth ' + r.breadth_multiplier },
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((displayedImplied(r) / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(displayedImplied(r)) })
         )),
@@ -319,6 +322,314 @@
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
+        )
+      )
+    );
+  }
+
+  // ---- Board export, comparison and reading guide: what the board shows, in your hands. ----
+
+  /** One CSV cell: quoted when it holds a comma, a quote or a newline. */
+  function csvCell(v) {
+    var s = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  /** The rows the board currently shows, as CSV text, in the current sort order. */
+  function boardCsv() {
+    var list = sortedRows(rows());
+    var lines = ['rank,name,slug,category,chains,tvl_usd,change_7d,age_days,multiple,implied_value_usd'];
+    list.forEach(function (r) {
+      lines.push([
+        r.rank, csvCell(r.name), csvCell(r.slug), csvCell(r.category || 'Other'),
+        csvCell((r.chains || []).join(' | ')), r.tvl_usd,
+        r.change_7d === null ? '' : r.change_7d,
+        r.age_days === null ? '' : r.age_days,
+        r.multiple, displayedImplied(r)
+      ].join(','));
+    });
+    return lines.join('\n') + '\n';
+  }
+
+  /** Download the board the page currently shows as a CSV file, one row per protocol. */
+  function downloadCsv() {
+    var blob = new Blob([boardCsv()], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'token-radar-board.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  /** Fallback copy for a browser with no async clipboard: a hidden textarea and execCommand. */
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'absolute';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* clipboard unavailable: the link stays in the address bar */ }
+    ta.remove();
+  }
+
+  /** Copy the page's current view (search, filters, tab, open protocol) as a link. */
+  function copyBoardLink() {
+    var url = window.location.href;
+    function done() { var n = document.getElementById('copy-note'); if (n) n.textContent = 'Link copied.'; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done, function () { fallbackCopy(url); done(); });
+    } else { fallbackCopy(url); done(); }
+  }
+
+  /** The export bar under the board: sort, row limit, CSV download and a copyable link. */
+  function exportBar() {
+    var total = rows().length;
+    var sortSelect = el('select', { id: 'sort-by', 'aria-label': 'Sort the board by' },
+      [['implied', 'Implied value'], ['tvl', 'TVL'], ['growth', '7-day growth'], ['age', 'Age'], ['multiple', 'Mcap / TVL'], ['name', 'Name'], ['category', 'Category']].map(function (opt) {
+        return el('option', { value: opt[0], text: opt[1], selected: state.sort === opt[0] ? 'selected' : null });
+      })
+    );
+    sortSelect.addEventListener('change', function () { state.sort = sortSelect.value; state.dir = -1; render(); });
+    var limitAll = el('button', { type: 'button', 'aria-pressed': state.limit === 'all' ? 'true' : 'false', text: 'Show all ' + total, onclick: function () { state.limit = 'all'; render(); } });
+    var limit50 = el('button', { type: 'button', 'aria-pressed': state.limit === '50' ? 'true' : 'false', text: 'Show top 50', onclick: function () { state.limit = '50'; render(); } });
+    return el('div', { class: 'exportbar' },
+      el('div', { class: 'field' }, el('label', { for: 'sort-by', text: 'Sort by' }), sortSelect),
+      el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Rows shown' }), el('div', { class: 'tabs' }, limitAll, limit50)),
+      el('button', { class: 'button', type: 'button', text: 'Download board as CSV', onclick: downloadCsv }),
+      el('button', { class: 'button', type: 'button', text: 'Copy link to this view', onclick: copyBoardLink }),
+      el('span', { id: 'copy-note', class: 'sub', 'aria-live': 'polite' }),
+      el('span', { class: 'sub', text: 'The CSV follows the search, the filters and the sort above.' })
+    );
+  }
+
+  /** One row of the comparison table: a figure for each protocol and the gap between them. */
+  function compareFigure(label, aText, bText, dText, dClass) {
+    return el('tr', null,
+      el('td', { text: label }),
+      el('td', { class: 'num', text: aText }),
+      el('td', { class: 'num', text: bText }),
+      el('td', { class: 'num ' + (dClass || ''), text: dText })
+    );
+  }
+
+  /** A signed dollar gap: +$1.23B, -$842K, or $0 when the two are equal. */
+  function deltaUsd(d) {
+    if (d === null || d === undefined || !isFinite(d)) return 'n/a';
+    if (d === 0) return '$0';
+    return (d > 0 ? '+' : '') + fmtUsd(d);
+  }
+
+  /** A signed plain-number gap with a unit: +0.12x, -3d, +5.00%. */
+  function deltaNum(d, unit, digits) {
+    if (d === null || d === undefined || !isFinite(d)) return 'n/a';
+    if (d === 0) return '0' + unit;
+    return (d > 0 ? '+' : '') + d.toFixed(digits === undefined ? 2 : digits) + unit;
+  }
+
+  /** The side-by-side table for two protocols, on the figures the ranking is built on. */
+  function compareTable(a, b) {
+    var growthA = a.change_7d === null ? null : a.change_7d;
+    var growthB = b.change_7d === null ? null : b.change_7d;
+    var ageA = a.age_days === null ? null : a.age_days;
+    var ageB = b.age_days === null ? null : b.age_days;
+    return el('div', { class: 'table-wrap' },
+      el('table', { class: 'compact' },
+        el('thead', null, el('tr', null,
+          el('th', { scope: 'col', text: 'Figure' }),
+          el('th', { scope: 'col', text: '#' + a.rank + ' ' + a.name }),
+          el('th', { scope: 'col', text: '#' + b.rank + ' ' + b.name }),
+          el('th', { scope: 'col', text: 'Gap (second minus first)' })
+        )),
+        el('tbody', null,
+          compareFigure('Implied value', fmtUsd(a.implied_value_usd), fmtUsd(b.implied_value_usd), deltaUsd(b.implied_value_usd - a.implied_value_usd), b.implied_value_usd >= a.implied_value_usd ? 'pos' : 'neg'),
+          compareFigure('TVL', fmtUsd(a.tvl_usd), fmtUsd(b.tvl_usd), deltaUsd(b.tvl_usd - a.tvl_usd), b.tvl_usd >= a.tvl_usd ? 'pos' : 'neg'),
+          compareFigure('Category', a.category || 'Other', b.category || 'Other', a.category === b.category ? 'same' : 'different', ''),
+          compareFigure('Chains', (a.chains || []).join(', ') || 'none', (b.chains || []).join(', ') || 'none', (a.chains || []).length === (b.chains || []).length ? 'same count' : deltaNum((b.chains || []).length - (a.chains || []).length, '', 0), ''),
+          compareFigure('7-day growth', fmtPct(growthA), fmtPct(growthB), growthA === null || growthB === null ? 'n/a' : deltaNum(growthB - growthA, '%'), growthA !== null && growthB !== null && growthB >= growthA ? 'pos' : 'neg'),
+          compareFigure('Age with no token', fmtAge(ageA), fmtAge(ageB), ageA === null || ageB === null ? 'n/a' : deltaNum(ageB - ageA, 'd', 0), ''),
+          compareFigure('Category multiple', a.multiple.toFixed(2) + 'x', b.multiple.toFixed(2) + 'x', deltaNum(b.multiple - a.multiple, 'x'), b.multiple >= a.multiple ? 'pos' : 'neg'),
+          compareFigure('Growth multiplier', String(a.growth_multiplier), String(b.growth_multiplier), deltaNum(b.growth_multiplier - a.growth_multiplier, ''), ''),
+          compareFigure('Maturity multiplier', String(a.maturity_multiplier), String(b.maturity_multiplier), deltaNum(b.maturity_multiplier - a.maturity_multiplier, ''), ''),
+          compareFigure('Breadth multiplier', String(a.breadth_multiplier), String(b.breadth_multiplier), deltaNum(b.breadth_multiplier - a.breadth_multiplier, ''), '')
+        )
+      )
+    );
+  }
+
+  /** Two protocols side by side: pick any two rows of the board and compare their figures. */
+  function comparePanel() {
+    function selectFor(which) {
+      var current = which === 'a' ? state.compareA : state.compareB;
+      var sel = el('select', { 'aria-label': which === 'a' ? 'First protocol to compare' : 'Second protocol to compare' },
+        el('option', { value: '', text: 'Pick a protocol' }),
+        DATA.rows.map(function (r) {
+          return el('option', { value: r.slug, text: '#' + r.rank + ' ' + r.name, selected: current === r.slug ? 'selected' : null });
+        })
+      );
+      sel.addEventListener('change', function () {
+        if (which === 'a') state.compareA = sel.value || null;
+        else state.compareB = sel.value || null;
+        render();
+      });
+      return sel;
+    }
+    var panel = el('section', { class: 'panel compare' },
+      el('h2', { text: 'Compare two protocols' }),
+      el('p', { class: 'sub', text: 'Pick any two rows of the board to see them side by side: the same figures the ranking is built on, and the gap between them. The gap reads second minus first.' }),
+      el('div', { class: 'compare-picks' }, selectFor('a'), selectFor('b'))
+    );
+    var a = DATA.rows.filter(function (r) { return r.slug === state.compareA; })[0];
+    var b = DATA.rows.filter(function (r) { return r.slug === state.compareB; })[0];
+    if (a && b) {
+      if (a.slug === b.slug) panel.appendChild(el('p', { class: 'sub', text: 'Pick two different protocols to compare them.' }));
+      else {
+        panel.appendChild(compareTable(a, b));
+        panel.appendChild(el('button', { class: 'button', type: 'button', text: 'Download comparison as CSV', onclick: function () { downloadCompareCsv(a, b); } }));
+      }
+    }
+    return panel;
+  }
+
+  /** The week's biggest movers on the board: the five fastest growers and the five hardest falls. */
+  function moversPanel() {
+    function movers(dir) {
+      return DATA.rows
+        .filter(function (r) { return r.change_7d !== null; })
+        .sort(function (a, b) { return dir * (b.change_7d - a.change_7d) || (a.slug < b.slug ? -1 : 1); })
+        .slice(0, 5);
+    }
+    function moverList(title, list, cls) {
+      return el('div', null,
+        el('h3', { text: title }),
+        el('ol', { class: 'movers' }, list.map(function (r) {
+          return el('li', null,
+            el('button', { type: 'button', onclick: function () { openDetail(r.slug); } },
+              el('b', { text: '#' + r.rank + ' ' + r.name }),
+              el('span', { class: 'num ' + cls, text: fmtPct(r.change_7d) }),
+              el('span', { class: 'sub', text: fmtUsd(r.implied_value_usd) + ' implied' })
+            )
+          );
+        }))
+      );
+    }
+    return el('section', { class: 'panel movers-panel' },
+      el('h2', { text: 'This week\u2019s biggest movers' }),
+      el('p', { class: 'sub', text: 'Seven-day TVL change is the model\u2019s growth input, so a fast mover is a row whose implied value is moving too. Select a mover to open its detail view.' }),
+      el('div', { class: 'movers-grid' },
+        moverList('Fastest growing', movers(1), 'pos'),
+        moverList('Hardest falling', movers(-1), 'neg')
+      )
+    );
+  }
+
+  /** The board by chain: where the ranked protocols live, and what each chain's rows imply. */
+  function chainPanel() {
+    var byChain = {};
+    DATA.rows.forEach(function (r) {
+      (r.chains || []).forEach(function (chain) {
+        var c = byChain[chain] || (byChain[chain] = { rows: 0, total: 0, top: null });
+        c.rows += 1;
+        c.total += r.implied_value_usd;
+        if (!c.top || r.implied_value_usd > c.top.implied_value_usd) c.top = r;
+      });
+    });
+    var chains = Object.keys(byChain).map(function (k) {
+      return { chain: k, rows: byChain[k].rows, total: byChain[k].total, top: byChain[k].top };
+    }).sort(function (a, b) { return b.total - a.total || (a.chain < b.chain ? -1 : 1); });
+    return el('section', { class: 'panel chains' },
+      el('h2', { text: 'Where the board lives, by chain' }),
+      el('p', { class: 'sub', text: 'A protocol on several chains counts once per chain it names. The table is sorted by total implied value, so the chains carrying the most launch value read first.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'compact' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Chain' }), el('th', { scope: 'col', text: 'Rows' }), el('th', { scope: 'col', text: 'Total implied' }), el('th', { scope: 'col', text: 'Top protocol' }))),
+          el('tbody', null, chains.slice(0, 12).map(function (c) {
+            return el('tr', null,
+              el('td', { text: c.chain }),
+              el('td', { class: 'num', text: String(c.rows) }),
+              el('td', { class: 'num', text: fmtUsd(c.total) }),
+              el('td', null, el('b', { text: c.top.name }), el('span', { class: 'sub', text: ' ' + fmtUsd(c.top.implied_value_usd) }))
+            );
+          }))
+        )
+      ),
+      el('p', { class: 'sub', text: 'Showing the top 12 of ' + chains.length + ' chains by total implied value.' })
+    );
+  }
+
+  /** The comparison on screen as CSV: one row per figure, both protocols and the gap. */
+  function compareCsv(a, b) {
+    function row(label, av, bv, dv) { return [csvCell(label), csvCell(av), csvCell(bv), csvCell(dv)].join(','); }
+    var lines = ['figure,' + csvCell(a.name) + ',' + csvCell(b.name) + ',gap'];
+    lines.push(row('Rank', String(a.rank), String(b.rank), String(b.rank - a.rank)));
+    lines.push(row('Implied value (USD)', String(a.implied_value_usd), String(b.implied_value_usd), String(b.implied_value_usd - a.implied_value_usd)));
+    lines.push(row('TVL (USD)', String(a.tvl_usd), String(b.tvl_usd), String(b.tvl_usd - a.tvl_usd)));
+    lines.push(row('Category', a.category || 'Other', b.category || 'Other', a.category === b.category ? 'same' : 'different'));
+    lines.push(row('7-day growth (%)', a.change_7d === null ? '' : String(a.change_7d), b.change_7d === null ? '' : String(b.change_7d), a.change_7d === null || b.change_7d === null ? '' : String(b.change_7d - a.change_7d)));
+    lines.push(row('Age (days)', a.age_days === null ? '' : String(a.age_days), b.age_days === null ? '' : String(b.age_days), a.age_days === null || b.age_days === null ? '' : String(b.age_days - a.age_days)));
+    lines.push(row('Category multiple', String(a.multiple), String(b.multiple), String(b.multiple - a.multiple)));
+    return lines.join('\n') + '\n';
+  }
+
+  /** Download the comparison the panel shows as a CSV file. */
+  function downloadCompareCsv(a, b) {
+    var blob = new Blob([compareCsv(a, b)], { type: 'text/csv' });
+    var aEl = document.createElement('a');
+    aEl.href = URL.createObjectURL(blob);
+    aEl.download = 'token-radar-compare-' + a.slug + '-vs-' + b.slug + '.csv';
+    document.body.appendChild(aEl);
+    aEl.click();
+    aEl.remove();
+    setTimeout(function () { URL.revokeObjectURL(aEl.href); }, 1000);
+  }
+
+  /** How to read the board, in plain language, for a reader who has never seen a radar. */
+  function howTo() {
+    return el('section', { class: 'panel howto' },
+      el('h2', { text: 'How to read this board' }),
+      el('ol', { class: 'howto-steps' },
+        el('li', null, el('b', { text: 'Start at the top. ' }), 'Rank 1 is the protocol whose token launch the model values most, not the biggest protocol. A small protocol with a strong multiple can outrank a large one.'),
+        el('li', null, el('b', { text: 'Check the multiple. ' }), 'Each row shows what live protocols in the same category already trade at, per dollar of TVL. That multiple is the only market input; everything else is the protocol\u2019s own record.'),
+        el('li', null, el('b', { text: 'Open a row. ' }), 'The detail view shows the full equation, the thesis in one sentence, and a seven-step farm plan derived from the protocol\u2019s category, chains, TVL and age.'),
+        el('li', null, el('b', { text: 'Try the sandbox. ' }), 'Move a weight in the model panel and the board recomputes at once. The submitted board always uses the weights the panel states; the sandbox only previews a different weighting.'),
+        el('li', null, el('b', { text: 'Use the Live token tab. ' }), 'Protocols that already trade are set aside from the ranking, with their market caps as facts, not model outputs — they are the comparables the ranking is learned from.')
+      ),
+      el('p', { class: 'sub', text: 'Implied value is a model of what a token could be worth at launch, built from this snapshot alone. It is an estimate, never a price, and never investment advice.' })
+    );
+  }
+
+  /** The board's total implied value split across categories, with each category's top row. */
+  function categoryPanel() {
+    var byCat = {};
+    DATA.rows.forEach(function (r) {
+      var key = r.category || 'Other';
+      var c = byCat[key] || (byCat[key] = { rows: 0, total: 0, top: null });
+      c.rows += 1;
+      c.total += r.implied_value_usd;
+      if (!c.top || r.implied_value_usd > c.top.implied_value_usd) c.top = r;
+    });
+    var cats = Object.keys(byCat).map(function (k) {
+      return { category: k, rows: byCat[k].rows, total: byCat[k].total, top: byCat[k].top };
+    }).sort(function (a, b) { return b.total - a.total || (a.category < b.category ? -1 : 1); });
+    var grand = DATA.rows.reduce(function (s, r) { return s + r.implied_value_usd; }, 0) || 1;
+    return el('section', { class: 'panel cats' },
+      el('h2', { text: 'Where the value sits, by category' }),
+      el('p', { class: 'sub', text: 'The board\u2019s total implied value split across categories. A category with one giant row and a category with many mid-size rows read very differently as a hunting ground.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', { class: 'compact' },
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Category' }), el('th', { scope: 'col', text: 'Rows' }), el('th', { scope: 'col', text: 'Total implied' }), el('th', { scope: 'col', text: 'Share' }), el('th', { scope: 'col', text: 'Top protocol' }))),
+          el('tbody', null, cats.map(function (c) {
+            return el('tr', null,
+              el('td', { text: c.category }),
+              el('td', { class: 'num', text: String(c.rows) }),
+              el('td', { class: 'num', text: fmtUsd(c.total) }),
+              el('td', { class: 'num', text: (100 * c.total / grand).toFixed(1) + '%' }),
+              el('td', null, el('b', { text: c.top.name }), el('span', { class: 'sub', text: ' ' + fmtUsd(c.top.implied_value_usd) }))
+            );
+          }))
         )
       )
     );
@@ -460,7 +771,15 @@
     var banner = previewBanner();
     if (banner) shell.appendChild(banner);
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
-    if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+    if (state.tab === 'pre-token') {
+      shell.appendChild(exportBar());
+      shell.appendChild(modelPanel());
+      shell.appendChild(howTo());
+      shell.appendChild(categoryPanel());
+      shell.appendChild(chainPanel());
+      shell.appendChild(moversPanel());
+      shell.appendChild(comparePanel());
+    }
     shell.appendChild(footer());
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');

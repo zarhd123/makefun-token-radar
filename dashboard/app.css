@@ -179,6 +179,45 @@ tr:nth-child(-n+3) .rank-badge { background: var(--accent); color: var(--accent-
 .foot { margin-top: var(--step-5); color: var(--faint); font-size: 12px; }
 .foot b { color: var(--muted); }
 
+/* Board export, comparison and reading guide: below the board, same palette. */
+.exportbar {
+  display: flex; flex-wrap: wrap; align-items: end; gap: var(--step-3);
+  padding: var(--step-4) 0; border-bottom: 1px solid var(--border);
+}
+.exportbar .field select { min-width: 170px; }
+.exportbar .button { align-self: end; }
+.exportbar .sub { align-self: center; }
+
+.compare { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-4); }
+.compare-picks { display: flex; flex-wrap: wrap; gap: var(--step-3); }
+.compare-picks select {
+  min-height: 36px; padding: 0 var(--step-3); border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--surface); min-width: 240px; color: var(--ink);
+}
+.compare td:first-child { color: var(--muted); }
+
+.howto { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-4); }
+.howto-steps { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-3); color: var(--muted); }
+.howto-steps li::marker { color: var(--accent); font-family: var(--font-num); }
+.howto-steps b { color: var(--ink); font-weight: 600; }
+
+.cats { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-4); }
+.cats td b { font-weight: 600; }
+
+.movers-panel { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-4); }
+.movers-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--step-5); }
+.movers { margin: 0; padding-left: var(--step-5); display: grid; gap: var(--step-2); }
+.movers li::marker { color: var(--accent); font-family: var(--font-num); }
+.movers button {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--step-2) var(--step-3);
+  width: 100%; padding: 0; border: 0; background: none; text-align: left; color: var(--ink);
+}
+.movers button:hover b { color: var(--accent); }
+.movers button b { font-weight: 600; }
+
+.chains { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-4); }
+.chains td b { font-weight: 600; }
+
 @media (max-width: 900px) {
   .shell { padding: var(--step-4); }
   .lede { grid-template-columns: 1fr; gap: var(--step-4); }

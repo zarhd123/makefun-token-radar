@@ -574,6 +574,114 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   return { board, radar };
 }
 
+/** One line of the board's summary: what a category contributes to the ranked board. */
+export interface CategoryTotal {
+  category: string;
+  rows: number;
+  total_implied_usd: number;
+  top_slug: string;
+  top_implied_usd: number;
+}
+
+/** The board in numbers: coverage, value concentration, and the per-category split. */
+export interface BoardSummary {
+  as_of: string;
+  model_version: string;
+  board_size: number;
+  watchlist_size: number;
+  early_size: number;
+  overall_multiple: number;
+  total_implied_usd: number;
+  median_implied_usd: number;
+  top1_implied_usd: number;
+  top3_implied_usd: number;
+  top10_implied_usd: number;
+  min_implied_usd: number;
+  categories: CategoryTotal[];
+  chains: { chain: string; rows: number }[];
+}
+
+/** The median of a sorted list of implied values, or 0 for an empty board. */
+function medianImplied(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)]!;
+}
+
+/**
+ * The board summarised for the entry's summary.json: totals, concentration, and the per-category
+ * split, computed from the board's own rows. A pure summary: it reads the board, it never rescores
+ * it, so the ranked rows it describes are exactly the ones buildBoard wrote, in the same order.
+ */
+export function summariseBoard(
+  board: BoardRow[],
+  snapshot: Snapshot,
+  learned: { byCategory: Map<string, { peers: number; median: number }>; overall: number },
+): BoardSummary {
+  const values = board.map((r) => r.implied_value_usd);
+  const byCategory = new Map<string, { rows: number; total: number; top_slug: string; top: number }>();
+  const byChain = new Map<string, number>();
+  for (const r of board) {
+    const key = r.category ?? '(none)';
+    const entry = byCategory.get(key) ?? { rows: 0, total: 0, top_slug: r.slug, top: 0 };
+    entry.rows += 1;
+    entry.total += r.implied_value_usd;
+    if (r.implied_value_usd > entry.top) {
+      entry.top = r.implied_value_usd;
+      entry.top_slug = r.slug;
+    }
+    byCategory.set(key, entry);
+    for (const chain of r.chains) byChain.set(chain, (byChain.get(chain) ?? 0) + 1);
+  }
+  const categories: CategoryTotal[] = [...byCategory.entries()]
+    .map(([category, v]) => ({ category, rows: v.rows, total_implied_usd: v.total, top_slug: v.top_slug, top_implied_usd: v.top }))
+    .sort((a, b) => b.total_implied_usd - a.total_implied_usd || (a.category < b.category ? -1 : 1));
+  const chains = [...byChain.entries()]
+    .map(([chain, rows]) => ({ chain, rows }))
+    .sort((a, b) => b.rows - a.rows || (a.chain < b.chain ? -1 : 1));
+  const topSum = (n: number): number => values.slice(0, n).reduce((sum, v) => sum + v, 0);
+  return {
+    as_of: snapshot.as_of,
+    model_version: MODEL_VERSION,
+    board_size: board.length,
+    watchlist_size: snapshot.watchlist.length,
+    early_size: board.filter((r) => !snapshot.watchlist.includes(r.slug)).length,
+    overall_multiple: Math.round(learned.overall * 1e4) / 1e4,
+    total_implied_usd: values.reduce((sum, v) => sum + v, 0),
+    median_implied_usd: medianImplied(values),
+    top1_implied_usd: topSum(1),
+    top3_implied_usd: topSum(3),
+    top10_implied_usd: topSum(10),
+    min_implied_usd: values.length > 0 ? values[values.length - 1]! : 0,
+    categories,
+    chains,
+  };
+}
+
+/** One row whose recomputed implied value does not match the board's, or null when all match. */
+export interface RecomputeMismatch {
+  slug: string;
+  board_value: number;
+  recomputed_value: number;
+}
+
+/**
+ * The board checked against the model a second time: every row's implied value recomputed from
+ * the snapshot's own figures, compared with the number the board carries. Returns the first
+ * mismatch, or null when the board reproduces exactly. The entrypoint runs this after the build
+ * as an independent verification pass.
+ */
+export function recomputeCheck(board: BoardRow[], snapshot: Snapshot, model: ModelConstants = MODEL): RecomputeMismatch | null {
+  const learned = learnComparables(snapshot, model);
+  for (const row of board) {
+    const p = snapshot.protocols.find((v) => v.slug === row.slug);
+    if (p === undefined) return { slug: row.slug, board_value: row.implied_value_usd, recomputed_value: -1 };
+    const v = impliedValue(p, snapshot.as_of, learned, model);
+    if (v.implied !== row.implied_value_usd) return { slug: row.slug, board_value: row.implied_value_usd, recomputed_value: v.implied };
+  }
+  return null;
+}
+
 /** The snapshot out of a file's text, refused unless it is the shape the model scores. */
 export function parseSnapshot(text: string): Snapshot {
   let raw: unknown;
